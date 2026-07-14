@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-type info struct{ user, host, os, arch, cpu, ram, disk, ip, git, uptime string }
+type info struct {
+	user, host, os, arch, cpu, ram, ip, uptime string
+	disks                                      []string
+}
 
 func main() { fmt.Print(render(collect(context.Background()), true)) }
 
@@ -24,41 +27,87 @@ func collect(ctx context.Context) info {
 		arch:   runtime.GOARCH,
 		cpu:    cpuName(ctx),
 		ram:    ram(ctx),
-		disk:   disk(ctx),
+		disks:  disks(ctx),
 		ip:     firstIP(),
-		git:    gitBranch(ctx),
 		uptime: uptime(ctx),
 	}
 }
 
+type palette struct{ red, red2, pink, orange, label, text, dim, reset string }
+
 func render(in info, color bool) string {
-	red, dim, reset := "", "", ""
-	if color {
-		red, dim, reset = "\x1b[31;1m", "\x1b[2m", "\x1b[0m"
+	p := colors(color)
+	logo := []string{
+		"        ▄▄▄▄▄▄▄        ",
+		"     ▄███████████▄     ",
+		"   ▄███▀       ▀███▄   ",
+		"  ▐███   ▄███▄   ███▌  ",
+		"  ▐███   ▀███▀   ███▌  ",
+		"   ▀███▄       ▄███▀   ",
+		"     ▀███████████▀     ",
+		"        ▀▀▀▀▀▀▀        ",
 	}
-	logo := []string{"██████╗ ", "██╔══██╗", "██████╔╝", "██╔══██╗", "██║  ██║", "╚═╝  ╚═╝"}
 	rows := []string{
-		fmt.Sprintf("%s%s@%s%s", red, in.user, in.host, reset),
-		kv("os", in.os), kv("arch", in.arch), kv("cpu", in.cpu), kv("ram", in.ram), kv("disk", in.disk), kv("ip", in.ip), kv("git", in.git), kv("up", in.uptime),
+		fmt.Sprintf("%s╭─ redfetch%s", p.red, p.reset),
+		line(p, "ᴜsᴇʀ", in.user+"@"+in.host),
+		line(p, "ᴏs", in.os),
+		line(p, "ᴀʀᴄʜ", in.arch),
+		line(p, "ᴄᴘᴜ", in.cpu),
+		line(p, "ʀᴀᴍ", in.ram),
 	}
-	var b strings.Builder
-	for i, art := range logo {
-		line := ""
-		if i < len(rows) {
-			line = rows[i]
+	for i, d := range in.disks {
+		label := "ᴅɪsᴋ"
+		if len(in.disks) > 1 {
+			label = fmt.Sprintf("ᴅɪsᴋ%d", i+1)
 		}
-		fmt.Fprintf(&b, "%s%s%s  %s%s%s\n", red, art, reset, dim, line, reset)
+		rows = append(rows, line(p, label, d))
 	}
-	for _, line := range rows[len(logo):] {
-		fmt.Fprintf(&b, "          %s%s%s\n", dim, line, reset)
+	rows = append(rows,
+		line(p, "ɪᴘ", in.ip),
+		line(p, "ᴜᴘ", in.uptime),
+		fmt.Sprintf("%s╰──────────%s", p.red, p.reset),
+	)
+	var b strings.Builder
+	for i := 0; i < len(logo) || i < len(rows); i++ {
+		if i < len(logo) {
+			fmt.Fprintf(&b, "%s%s%s", logoColor(p, i), logo[i], p.reset)
+		} else {
+			b.WriteString(strings.Repeat(" ", len([]rune(logo[0]))))
+		}
+		if i < len(rows) {
+			fmt.Fprintf(&b, "  %s", rows[i])
+		}
+		b.WriteByte('\n')
 	}
 	return b.String()
 }
 
-func kv(k, v string) string { return fmt.Sprintf("%-6s %s", k+":", fallback(v, "-")) }
+func colors(on bool) palette {
+	if !on {
+		return palette{}
+	}
+	return palette{
+		red:    "\x1b[38;5;196;1m",
+		red2:   "\x1b[38;5;203m",
+		pink:   "\x1b[38;5;197m",
+		orange: "\x1b[38;5;208m",
+		label:  "\x1b[38;5;245m",
+		text:   "\x1b[38;5;231m",
+		dim:    "\x1b[2m",
+		reset:  "\x1b[0m",
+	}
+}
+
+func logoColor(p palette, i int) string {
+	return []string{p.red, p.red, p.red2, p.red2, p.pink, p.pink, p.orange, p.orange}[i%8]
+}
+
+func line(p palette, k, v string) string {
+	return fmt.Sprintf("%s│%s %s%-8s%s %s%s%s", p.red2, p.reset, p.label, k+":", p.reset, p.text, fallback(v, "-"), p.reset)
+}
 
 func run(ctx context.Context, name string, args ...string) string {
-	ctx, cancel := context.WithTimeout(ctx, 700*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	out, err := cmd.Output()
@@ -99,14 +148,13 @@ func ram(ctx context.Context) string {
 	return "-"
 }
 
-func disk(ctx context.Context) string {
+func disks(ctx context.Context) []string {
 	if runtime.GOOS == "windows" {
-		return fallback(run(ctx, "powershell", "-NoProfile", "-Command", "$d=Get-CimInstance Win32_LogicalDisk -Filter \"DeviceID='C:'\"; '{0:N1} GB / {1:N1} GB' -f (($d.Size-$d.FreeSpace)/1GB),($d.Size/1GB)"), "-")
+		out := run(ctx, "powershell", "-NoProfile", "-Command", "Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Used -ne $null -and ($_.Used+$_.Free) -gt 0} | ForEach-Object { '{0}: {1:N1} GB / {2:N1} GB' -f $_.Name,($_.Used/1GB),(($_.Used+$_.Free)/1GB) }")
+		return lines(out)
 	}
-	if s := run(ctx, "sh", "-c", "df -h / 2>/dev/null | awk 'NR==2 {print $3 \" / \" $2}'"); s != "" {
-		return s
-	}
-	return "-"
+	out := run(ctx, "sh", "-c", "df -h -x tmpfs -x devtmpfs 2>/dev/null | awk 'NR>1 {print $6 \": \" $3 \" / \" $2}'")
+	return lines(out)
 }
 
 func uptime(ctx context.Context) string {
@@ -116,8 +164,12 @@ func uptime(ctx context.Context) string {
 	return fallback(run(ctx, "sh", "-c", "uptime -p 2>/dev/null | sed 's/^up //'"), "-")
 }
 
-func gitBranch(ctx context.Context) string {
-	return fallback(run(ctx, "git", "branch", "--show-current"), "-")
+func lines(s string) []string {
+	out := strings.FieldsFunc(s, func(r rune) bool { return r == '\n' || r == '\r' })
+	if len(out) == 0 {
+		return []string{"-"}
+	}
+	return out
 }
 
 func firstIP() string {

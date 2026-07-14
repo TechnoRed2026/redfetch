@@ -1,6 +1,6 @@
 # Redfetch
 
-Tiny red system fetch for terminals.
+A tiny red terminal system fetch with a cleaner ASCII badge.
 
 ```powershell
 go run .
@@ -19,9 +19,8 @@ Shows:
 - OS + arch
 - CPU
 - RAM
-- disk
+- all mounted disks
 - LAN IP
-- git branch
 - uptime
 
-No external Go dependencies.
+No external Go dependencies. One file, one binary.
