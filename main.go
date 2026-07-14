@@ -8,29 +8,54 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
+
+const version = "0.2.0"
 
 type info struct {
 	user, host, os, arch, cpu, ram, ip, uptime string
 	disks                                      []string
 }
 
-func main() { fmt.Print(render(collect(context.Background()), true)) }
+func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Println("redfetch " + version)
+		return
+	}
+	fmt.Print(render(collect(context.Background()), useColor()))
+}
+
+// color off when piped or NO_COLOR set; on Windows also requires VT support.
+func useColor() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	st, err := os.Stdout.Stat()
+	if err != nil || st.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	return enableVT()
+}
 
 func collect(ctx context.Context) info {
 	host, _ := os.Hostname()
-	return info{
-		user:   getenv("USERNAME", getenv("USER", "user")),
-		host:   fallback(host, "host"),
-		os:     osName(ctx),
-		arch:   runtime.GOARCH,
-		cpu:    cpuName(ctx),
-		ram:    ram(ctx),
-		disks:  disks(ctx),
-		ip:     firstIP(),
-		uptime: uptime(ctx),
+	in := info{
+		user: getenv("USERNAME", getenv("USER", "user")),
+		host: fallback(host, "host"),
+		arch: runtime.GOARCH,
 	}
+	var wg sync.WaitGroup
+	par := func(f func()) { wg.Add(1); go func() { defer wg.Done(); f() }() }
+	par(func() { in.os = osName(ctx) })
+	par(func() { in.cpu = cpuName(ctx) })
+	par(func() { in.ram = ram(ctx) })
+	par(func() { in.disks = disks(ctx) })
+	par(func() { in.ip = firstIP() })
+	par(func() { in.uptime = uptime(ctx) })
+	wg.Wait()
+	return in
 }
 
 type palette struct{ red, red2, pink, orange, label, text, dim, reset string }
@@ -139,6 +164,9 @@ func cpuName(ctx context.Context) string {
 }
 
 func ram(ctx context.Context) string {
+	if s := nativeRAM(); s != "" {
+		return s
+	}
 	if runtime.GOOS == "windows" {
 		return fallback(run(ctx, "powershell", "-NoProfile", "-Command", "$m=Get-CimInstance Win32_OperatingSystem; '{0:N1} GB / {1:N1} GB' -f (($m.TotalVisibleMemorySize-$m.FreePhysicalMemory)/1MB),($m.TotalVisibleMemorySize/1MB)"), "-")
 	}
@@ -149,6 +177,9 @@ func ram(ctx context.Context) string {
 }
 
 func disks(ctx context.Context) []string {
+	if d := nativeDisks(); len(d) > 0 {
+		return d
+	}
 	if runtime.GOOS == "windows" {
 		out := run(ctx, "powershell", "-NoProfile", "-Command", "Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Used -ne $null -and ($_.Used+$_.Free) -gt 0} | ForEach-Object { '{0}: {1:N1} GB / {2:N1} GB' -f $_.Name,($_.Used/1GB),(($_.Used+$_.Free)/1GB) }")
 		return lines(out)
@@ -158,6 +189,9 @@ func disks(ctx context.Context) []string {
 }
 
 func uptime(ctx context.Context) string {
+	if s := nativeUptime(); s != "" {
+		return s
+	}
 	if runtime.GOOS == "windows" {
 		return fallback(run(ctx, "powershell", "-NoProfile", "-Command", "$u=(Get-Date)-(Get-CimInstance Win32_OperatingSystem).LastBootUpTime; '{0}d {1}h {2}m' -f $u.Days,$u.Hours,$u.Minutes"), "-")
 	}
