@@ -1,0 +1,11 @@
+# build
+redfetch
+redfetch.exe
+*.exe
+/bin/
+/dist/
+
+# editors
+.vscode/
+.idea/
+.DS_Store
